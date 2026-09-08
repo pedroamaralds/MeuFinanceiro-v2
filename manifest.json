@@ -1,6 +1,6 @@
 {
   "name": "Meu Financeiro",
-  "short_name": "Financeiro",
+  "short_name": "Meu Financeiro",
   "description": "Controle financeiro pessoal simples e privado.",
   "start_url": "./",
   "scope": "./",
