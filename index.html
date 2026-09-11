@@ -154,6 +154,27 @@
   .balance-sub-label{font-size:12px;opacity:0.8;}
   .balance-sub-value{font-size:16px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums;}
 
+  .month-switch{margin-bottom:14px;}
+  .month-switch-label{font-size:15.5px;font-weight:800;}
+  .compare-line{font-size:12.5px;font-weight:700;margin:-8px 0 14px;text-align:center;}
+  .mov-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);}
+  .mov-row:last-child{border-bottom:none;}
+  .mov-desc{font-weight:700;font-size:14px;}
+  .mov-date{font-size:12px;color:var(--text-muted);margin-top:1px;}
+  .mov-value{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+  /* Histórico */
+  .hist-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);}
+  .hist-row:last-child{border-bottom:none;}
+  .hist-main{min-width:0;flex:1;}
+  .hist-desc{font-weight:700;font-size:14.5px;}
+  .hist-meta{font-size:12px;color:var(--text-muted);margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .hist-actions{display:flex;gap:4px;flex:0 0 auto;}
+  .hist-value{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;margin-right:6px;}
+  .search-wrap{position:relative;margin-bottom:10px;}
+  .search-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;stroke:var(--text-faint);}
+  .search-wrap input{padding-left:38px;}
+
   .bar-row{margin-bottom:12px;}
   .bar-row-top{display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:6px;}
   .bar-row-top .name{font-weight:600;}
@@ -229,6 +250,8 @@
   }
   .chip button{width:18px;height:18px;border-radius:50%;background:var(--surface-hover);display:flex;align-items:center;justify-content:center;}
   .chip button svg{width:9px;height:9px;stroke:var(--text-muted);}
+  .chip .pencil-btn{background:transparent;width:auto;height:auto;}
+  .chip .pencil-btn svg{width:11px;height:11px;stroke:var(--text-muted);}
 
   .divider{height:1px;background:var(--border);margin:18px 0;}
 
@@ -289,13 +312,17 @@
   firebase.initializeApp(firebaseConfig);
   var fbAuth = firebase.auth();
   var fbDb = firebase.firestore();
+  try{
+    fbDb.enablePersistence({ synchronizeTabs:true }).catch(function(){ /* múltiplas abas ou navegador sem suporte: segue online-only */ });
+  }catch(e){}
 </script>
 <script>
 (function(){
   "use strict";
 
   var STORAGE_KEY = "financeiro_state_v1";
-  var DEFAULT_CATEGORIES = ["Alimentação","Combustível","Vestuário","Moradia","Saúde","Lazer","Outros"];
+  var DEFAULT_CATEGORIES = ["Alimentação","Combustível","Moradia","Saúde","Lazer","Compras","Transporte","Assinaturas","Educação","Vestuário","Outros"];
+  var MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 
   function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
@@ -304,16 +331,50 @@
       profile: { name:"", email:"" },
       theme: "dark",
       categories: DEFAULT_CATEGORIES.map(function(n){ return { id:uid(), name:n }; }),
-      incomeSources: [],
-      expenseLists: [],
       incomes: [],
       expenses: []
     };
   }
 
+  /* ---------- datas / períodos ---------- */
+  function pad2(n){ return n<10 ? "0"+n : ""+n; }
+  function dateToISO(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+  function todayISO(){ return dateToISO(new Date()); }
+  function monthKeyOf(iso){ return iso ? iso.slice(0,7) : ""; }
+  function currentMonthKey(){ return todayISO().slice(0,7); }
+  function shiftMonthKey(mk, delta){
+    var parts = mk.split("-"); var y = parseInt(parts[0],10); var m = parseInt(parts[1],10)-1;
+    m += delta;
+    y += Math.floor(m/12);
+    m = ((m%12)+12)%12;
+    return y+"-"+pad2(m+1);
+  }
+  function monthLabel(mk){
+    var parts = mk.split("-"); var y = parts[0]; var m = parseInt(parts[1],10)-1;
+    return MONTH_NAMES[m] + "/" + y;
+  }
+  function formatDateBR(iso){
+    if(!iso) return "";
+    var p = iso.split("-");
+    return p[2]+"/"+p[1]+"/"+p[0].slice(2);
+  }
+
+  function migrateState(st){
+    st.incomes.forEach(function(i){ if(!i.date) i.date = dateToISO(new Date(i.createdAt||Date.now())); });
+    st.expenses.forEach(function(e){ if(!e.date) e.date = dateToISO(new Date(e.createdAt||Date.now())); });
+    var existingNames = st.categories.map(function(c){ return c.name.trim().toLowerCase(); });
+    DEFAULT_CATEGORIES.forEach(function(n){
+      if(existingNames.indexOf(n.toLowerCase())===-1){
+        st.categories.push({ id:uid(), name:n });
+        existingNames.push(n.toLowerCase());
+      }
+    });
+    return st;
+  }
+
   var state = null;
   var currentUser = null;
-  var ui = { tab:"resumo", currentListId:null, currentIncomeId:null, modal:null, editing:null, toast:null, toastTimer:null };
+  var ui = { tab:"resumo", modal:null, editing:null, toast:null, toastTimer:null, currentMonth:currentMonthKey(), histType:"todos", histCategory:"", histSearch:"" };
   var auth = { mode:"login", loading:false, error:"" };
 
   function fmt(n){
@@ -356,6 +417,7 @@
           var parsed = JSON.parse(doc.data().payload);
           state = Object.assign(defaultState(), parsed);
           if(!state.categories || !state.categories.length) state.categories = defaultState().categories;
+          migrateState(state);
         }catch(e){ state = defaultState(); }
       } else {
         var legacy = null;
@@ -364,6 +426,7 @@
           if(raw) legacy = JSON.parse(raw);
         }catch(e){}
         state = legacy ? Object.assign(defaultState(), legacy) : defaultState();
+        migrateState(state);
         saveState();
       }
     }).catch(function(){
@@ -383,15 +446,25 @@
   /* ---------- calculations ---------- */
   function totalIncome(){ return state.incomes.reduce(function(s,i){ return s + Number(i.value||0); },0); }
   function totalExpense(){ return state.expenses.reduce(function(s,e){ return s + Number(e.value||0); },0); }
-  function incomeBySource(sourceId){ return state.incomes.filter(function(i){return i.sourceId===sourceId;}).reduce(function(s,i){return s+Number(i.value||0);},0); }
-  function expenseByList(listId){ return state.expenses.filter(function(e){return e.listId===listId;}).reduce(function(s,e){return s+Number(e.value||0);},0); }
-  function expenseByCategory(){
+  function expenseByCategory(list){
     var map = {};
-    state.expenses.forEach(function(e){
+    (list||state.expenses).forEach(function(e){
       var key = e.category || "Sem categoria";
       map[key] = (map[key]||0) + Number(e.value||0);
     });
     return map;
+  }
+
+  /* ---------- cálculos por período ---------- */
+  function incomesOfMonth(mk){ return state.incomes.filter(function(i){ return monthKeyOf(i.date)===mk; }); }
+  function expensesOfMonth(mk){ return state.expenses.filter(function(e){ return monthKeyOf(e.date)===mk; }); }
+  function sumValues(list){ return list.reduce(function(s,x){ return s+Number(x.value||0); },0); }
+  function monthsWithData(){
+    var set = {};
+    state.incomes.forEach(function(i){ set[monthKeyOf(i.date)]=true; });
+    state.expenses.forEach(function(e){ set[monthKeyOf(e.date)]=true; });
+    set[ui.currentMonth]=true;
+    return Object.keys(set).sort();
   }
 
   /* ---------- rendering ---------- */
@@ -420,7 +493,11 @@
       trash:'<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m1 0-1 13a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2L7 7"/></svg>',
       x:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round"><path d="M5 5l14 14M19 5 5 19"/></svg>',
       plus:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
-      arrowRight:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg>'
+      arrowRight:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg>',
+      arrowLeft:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H5M11 5l-7 7 7 7"/></svg>',
+      arrowRight2:'<svg viewBox="0 0 24 24" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg>',
+      list:'<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+      search:'<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
     };
     return icons[name] || "";
   }
@@ -439,6 +516,7 @@
       { id:"resumo", label:"Resumo", ic:"home" },
       { id:"entradas", label:"Entradas", ic:"arrowDown" },
       { id:"gastos", label:"Saídas", ic:"arrowUp" },
+      { id:"historico", label:"Histórico", ic:"list" },
       { id:"perfil", label:"Perfil", ic:"user" }
     ];
     return '<nav class="bottomnav">' + items.map(function(it){
@@ -451,17 +529,31 @@
     if(ui.tab==="resumo") return renderResumo();
     if(ui.tab==="entradas") return renderEntradas();
     if(ui.tab==="gastos") return renderGastos();
+    if(ui.tab==="historico") return renderHistorico();
     if(ui.tab==="perfil") return renderPerfil();
     return "";
   }
 
   /* ---------- RESUMO ---------- */
+  function renderMonthSwitcher(){
+    return '<div class="row-between month-switch">' +
+      '<button class="icon-btn" data-action="month-prev" aria-label="Mês anterior">'+icon("arrowLeft")+'</button>' +
+      '<div class="month-switch-label">'+monthLabel(ui.currentMonth)+'</div>' +
+      '<button class="icon-btn" data-action="month-next" aria-label="Próximo mês">'+icon("arrowRight2")+'</button>' +
+    '</div>';
+  }
+
   function renderResumo(){
-    var inc = totalIncome(), exp = totalExpense(), bal = inc - exp;
-    var maxSide = Math.max(inc, exp, 1);
+    var mk = ui.currentMonth;
+    var incList = incomesOfMonth(mk), expList = expensesOfMonth(mk);
+    var inc = sumValues(incList), exp = sumValues(expList), bal = inc - exp;
+    var prevMk = shiftMonthKey(mk, -1);
+    var prevBal = sumValues(incomesOfMonth(prevMk)) - sumValues(expensesOfMonth(prevMk));
+
     var html = '';
+    html += renderMonthSwitcher();
     html += '<div class="balance-card">' +
-      '<div class="balance-label">Saldo geral</div>' +
+      '<div class="balance-label">Sobrou no mês</div>' +
       '<div class="balance-value">'+fmt(bal)+'</div>' +
       '<div class="balance-sub">' +
         '<div class="balance-sub-item"><div class="balance-sub-label">Entrou</div><div class="balance-sub-value">'+fmt(inc)+'</div></div>' +
@@ -469,52 +561,43 @@
       '</div>' +
     '</div>';
 
+    if((inc>0 || exp>0) && (incomesOfMonth(prevMk).length || expensesOfMonth(prevMk).length)){
+      var delta = bal - prevBal;
+      var deltaTxt = (delta>=0?"+":"") + fmt(delta) + " vs. " + monthLabel(prevMk);
+      html += '<div class="compare-line" style="color:'+(delta>=0?'var(--success)':'var(--danger)')+'">'+esc(deltaTxt)+'</div>';
+    }
+
     if(inc===0 && exp===0){
-      html += '<div class="card empty-state"><strong>Sem lançamentos ainda</strong>Adicione uma entrada ou uma saída para ver o resumo aqui.</div>';
-      return html;
-    }
+      html += '<div class="card empty-state"><strong>Sem lançamentos neste mês</strong>Adicione uma entrada ou uma saída para ver o resumo do período aqui.</div>';
+    } else {
+      var byCat = expenseByCategory(expList);
+      var catKeys = Object.keys(byCat);
+      if(catKeys.length){
+        catKeys.sort(function(a,b){ return byCat[b]-byCat[a]; });
+        html += '<div class="section-title">Saídas por categoria no mês</div><div class="card">';
+        catKeys.forEach(function(k){
+          var v = byCat[k];
+          var pct = exp>0 ? Math.round((v/exp)*100) : 0;
+          html += barRow(k, v, pct);
+        });
+        html += '</div>';
+      }
 
-    if(state.expenseLists.length){
-      html += '<div class="section-title">Saída por fonte</div><div class="card">';
-      state.expenseLists.forEach(function(l){
-        var v = expenseByList(l.id);
-        var pct = exp>0 ? Math.round((v/exp)*100) : 0;
-        html += barRow(l.name, v, pct);
-      });
-      html += '</div>';
+      var movs = incList.map(function(i){ return { type:"in", date:i.date, value:i.value, desc:i.description, label:"Entrada" }; })
+        .concat(expList.map(function(e){ return { type:"out", date:e.date, value:e.value, desc:e.description, label:e.category||"Sem categoria" }; }))
+        .sort(function(a,b){ return b.date.localeCompare(a.date); })
+        .slice(0,5);
+      if(movs.length){
+        html += '<div class="section-title">Últimas movimentações</div><div class="card">';
+        movs.forEach(function(m){
+          html += '<div class="mov-row">' +
+            '<div class="mov-info"><div class="mov-desc">'+esc(m.desc||m.label)+'</div><div class="mov-date">'+formatDateBR(m.date)+' · '+esc(m.label)+'</div></div>' +
+            '<div class="mov-value" style="color:'+(m.type==="in"?"var(--success)":"var(--danger)")+'">'+(m.type==="in"?"+ ":"- ")+fmt(m.value)+'</div>' +
+          '</div>';
+        });
+        html += '</div>';
+      }
     }
-
-    var byCat = expenseByCategory();
-    var catKeys = Object.keys(byCat);
-    if(catKeys.length){
-      catKeys.sort(function(a,b){ return byCat[b]-byCat[a]; });
-      html += '<div class="section-title">Saídas por categoria</div><div class="card">';
-      catKeys.forEach(function(k){
-        var v = byCat[k];
-        var pct = exp>0 ? Math.round((v/exp)*100) : 0;
-        html += barRow(k, v, pct);
-      });
-      html += '</div>';
-    }
-
-    if(state.incomeSources.length){
-      html += '<div class="section-title">Entradas por fonte</div><div class="card">';
-      state.incomeSources.forEach(function(s){
-        var v = incomeBySource(s.id);
-        var pct = inc>0 ? Math.round((v/inc)*100) : 0;
-        html += barRow(s.name, v, pct);
-      });
-      html += '</div>';
-    }
-
-    html += '<div class="section-title">Extrato</div>' +
-      '<div class="card">' +
-        '<div class="modal-text" style="margin-bottom:14px;">Gere um resumo de tudo o que foi lançado para guardar ou enviar por e-mail.</div>' +
-        '<div class="form-row-2">' +
-          '<button class="btn btn-secondary btn-block" data-action="download-extrato">Baixar extrato (.txt)</button>' +
-          '<button class="btn btn-block" data-action="email-extrato">Enviar por e-mail</button>' +
-        '</div>' +
-      '</div>';
 
     return html;
   }
@@ -528,125 +611,154 @@
 
   /* ---------- ENTRADAS ---------- */
   function renderEntradas(){
-    if(!ui.currentIncomeId && state.incomeSources.length) ui.currentIncomeId = state.incomeSources[0].id;
     var html = '';
-    html += '<div class="pills">';
-    state.incomeSources.forEach(function(s){
-      html += '<button class="pill'+(s.id===ui.currentIncomeId?' active':'')+'" data-action="select-income" data-id="'+s.id+'">'+esc(s.name)+'</button>';
-    });
-    html += '<button class="pill add-pill" data-action="add-income-source">+ Adicionar</button>';
-    html += '</div>';
-
-    var source = state.incomeSources.find(function(s){ return s.id===ui.currentIncomeId; });
-    if(!source){
-      html += '<div class="card empty-state"><strong>Nenhuma fonte de renda</strong>Crie uma fonte, como "Salário", para começar.</div>';
-      return html;
-    }
-    var entries = state.incomes.filter(function(i){ return i.sourceId===source.id; }).sort(function(a,b){ return b.createdAt-a.createdAt; });
+    var entries = state.incomes.slice().sort(function(a,b){ return (b.date||"").localeCompare(a.date||"") || b.createdAt-a.createdAt; });
     var total = entries.reduce(function(s,i){ return s+Number(i.value||0); },0);
-    var isEditingName = ui.editing && ui.editing.type==="income-source" && ui.editing.id===source.id;
 
     html += '<div class="card">';
-    html += '<div class="row-between">';
-    if(isEditingName){
-      html += '<input class="inline-edit-input" id="edit-name-input" value="'+esc(source.name)+'" data-action="rename-input" data-kind="income-source" data-id="'+source.id+'">';
-    } else {
-      html += '<div class="name-edit-wrap"><span class="name-text">'+esc(source.name)+'</span>' +
-        '<button class="edit-pencil" data-action="start-edit" data-kind="income-source" data-id="'+source.id+'">'+icon("pencil")+'</button></div>';
-    }
-    html += '<span class="list-total pos">'+fmt(total)+'</span>';
-    html += '</div>';
-
-    if(entries.length===0){
-      html += '<div class="empty-state" style="padding:18px 0 6px;">Nenhum valor lançado aqui ainda.</div>';
-    } else {
-      html += '<table class="entries-table"><thead><tr><th>Valor</th><th>Descrição</th><th></th></tr></thead><tbody>';
-      entries.forEach(function(e){
-        html += '<tr>' +
-          '<td class="td-value" style="color:var(--success)">'+fmt(e.value)+'</td>' +
-          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
-          '<td><button class="row-del" data-action="delete-income" data-id="'+e.id+'">'+icon("trash")+'</button></td>' +
-        '</tr>';
-      });
-      html += '</tbody></table>';
-    }
-
-    html += '<div class="add-form" data-source-id="'+source.id+'">' +
-      '<div class="form-row-2">' +
-        '<input type="text" inputmode="decimal" placeholder="Valor (R$)" name="value">' +
-        '<input type="text" placeholder="Descrição (opcional)" name="description">' +
-      '</div>' +
-      '<button type="button" class="btn btn-block" data-action="submit-income" data-source-id="'+source.id+'">Adicionar entrada</button>' +
+    html += '<div class="row-between" style="margin-bottom:2px;">' +
+      '<span class="name-text">Total de entradas</span>' +
+      '<span class="list-total pos">'+fmt(total)+'</span>' +
     '</div>';
 
-    if(state.incomeSources.length > 1){
-      html += '<button class="btn btn-ghost btn-sm" style="margin-top:14px;" data-action="ask-delete-income-source" data-id="'+source.id+'">Remover esta fonte</button>';
-    }
+    html += '<div class="add-form">' +
+      '<div class="form-row-2">' +
+        '<input type="text" inputmode="decimal" placeholder="Valor (R$)" name="value">' +
+        '<input type="date" name="date" value="'+todayISO()+'">' +
+      '</div>' +
+      '<input type="text" placeholder="Descrição (opcional)" name="description">' +
+      '<button type="button" class="btn btn-block" data-action="submit-income">Adicionar entrada</button>' +
+    '</div>';
     html += '</div>';
+
+    html += '<div class="section-title">Todas as entradas</div>';
+    if(entries.length===0){
+      html += '<div class="card empty-state"><strong>Nenhuma entrada ainda</strong>Lance sua primeira entrada acima.</div>';
+    } else {
+      html += '<div class="card">';
+      html += '<table class="entries-table"><thead><tr><th>Data</th><th>Valor</th><th>Descrição</th><th></th></tr></thead><tbody>';
+      entries.forEach(function(e){
+        html += '<tr>' +
+          '<td>'+formatDateBR(e.date)+'</td>' +
+          '<td class="td-value" style="color:var(--success)">'+fmt(e.value)+'</td>' +
+          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
+          '<td style="white-space:nowrap;">' +
+            '<button class="edit-pencil" data-action="open-edit-entry" data-type="in" data-id="'+e.id+'">'+icon("pencil")+'</button>' +
+            '<button class="row-del" data-action="delete-income" data-id="'+e.id+'">'+icon("trash")+'</button>' +
+          '</td>' +
+        '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
     return html;
   }
 
   /* ---------- GASTOS ---------- */
   function renderGastos(){
-    if(!ui.currentListId && state.expenseLists.length) ui.currentListId = state.expenseLists[0].id;
     var html = '';
-    html += '<div class="pills">';
-    state.expenseLists.forEach(function(l){
-      html += '<button class="pill'+(l.id===ui.currentListId?' active':'')+'" data-action="select-list" data-id="'+l.id+'">'+esc(l.name)+'</button>';
-    });
-    if(state.expenseLists.length < 5){
-      html += '<button class="pill add-pill" data-action="add-expense-list">+ Adicionar</button>';
-    }
-    html += '</div>';
-
-    var list = state.expenseLists.find(function(l){ return l.id===ui.currentListId; });
-    if(!list){
-      html += '<div class="card empty-state"><strong>Nenhuma lista de saídas</strong>Crie uma lista, como "Despesas", para começar.</div>';
-      return html;
-    }
-    var entries = state.expenses.filter(function(e){ return e.listId===list.id; }).sort(function(a,b){ return b.createdAt-a.createdAt; });
+    var entries = state.expenses.slice().sort(function(a,b){ return (b.date||"").localeCompare(a.date||"") || b.createdAt-a.createdAt; });
     var total = entries.reduce(function(s,e){ return s+Number(e.value||0); },0);
-    var isEditingName = ui.editing && ui.editing.type==="expense-list" && ui.editing.id===list.id;
 
     html += '<div class="card">';
-    html += '<div class="row-between">';
-    if(isEditingName){
-      html += '<input class="inline-edit-input" id="edit-name-input" value="'+esc(list.name)+'" data-action="rename-input" data-kind="expense-list" data-id="'+list.id+'">';
-    } else {
-      html += '<div class="name-edit-wrap"><span class="name-text">'+esc(list.name)+'</span>' +
-        '<button class="edit-pencil" data-action="start-edit" data-kind="expense-list" data-id="'+list.id+'">'+icon("pencil")+'</button></div>';
-    }
-    html += '<span class="list-total neg">'+fmt(total)+'</span>';
-    html += '</div>';
+    html += '<div class="row-between" style="margin-bottom:2px;">' +
+      '<span class="name-text">Total de saídas</span>' +
+      '<span class="list-total neg">'+fmt(total)+'</span>' +
+    '</div>';
 
-    if(entries.length===0){
-      html += '<div class="empty-state" style="padding:18px 0 6px;">Nenhuma saída lançada aqui ainda.</div>';
-    } else {
-      html += '<table class="entries-table"><thead><tr><th>Valor</th><th>Descrição</th><th>Categoria</th><th></th></tr></thead><tbody>';
-      entries.forEach(function(e){
-        html += '<tr>' +
-          '<td class="td-value" style="color:var(--danger)">'+fmt(e.value)+'</td>' +
-          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
-          '<td><span class="cat-chip">'+esc(e.category||"Sem categoria")+'</span></td>' +
-          '<td><button class="row-del" data-action="delete-expense" data-id="'+e.id+'">'+icon("trash")+'</button></td>' +
-        '</tr>';
-      });
-      html += '</tbody></table>';
-    }
-
-    html += '<div class="add-form" data-list-id="'+list.id+'">' +
+    html += '<div class="add-form">' +
       '<div class="form-row-2">' +
         '<input type="text" inputmode="decimal" placeholder="Valor (R$)" name="value">' +
-        '<input type="text" placeholder="Descrição (opcional)" name="description">' +
+        '<input type="date" name="date" value="'+todayISO()+'">' +
       '</div>' +
+      '<input type="text" placeholder="Descrição (opcional)" name="description">' +
       '<select name="category">' +
         state.categories.map(function(c){ return '<option value="'+esc(c.name)+'">'+esc(c.name)+'</option>'; }).join("") +
       '</select>' +
-      '<button type="button" class="btn btn-block" data-action="submit-expense" data-list-id="'+list.id+'">Adicionar saída</button>' +
+      '<button type="button" class="btn btn-block" data-action="submit-expense">Adicionar saída</button>' +
+    '</div>';
+    html += '</div>';
+
+    html += '<div class="section-title">Todas as saídas</div>';
+    if(entries.length===0){
+      html += '<div class="card empty-state"><strong>Nenhuma saída ainda</strong>Lance sua primeira saída acima.</div>';
+    } else {
+      html += '<div class="card">';
+      html += '<table class="entries-table"><thead><tr><th>Data</th><th>Valor</th><th>Descrição</th><th>Categoria</th><th></th></tr></thead><tbody>';
+      entries.forEach(function(e){
+        html += '<tr>' +
+          '<td>'+formatDateBR(e.date)+'</td>' +
+          '<td class="td-value" style="color:var(--danger)">'+fmt(e.value)+'</td>' +
+          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
+          '<td><span class="cat-chip">'+esc(e.category||"Sem categoria")+'</span></td>' +
+          '<td style="white-space:nowrap;">' +
+            '<button class="edit-pencil" data-action="open-edit-entry" data-type="out" data-id="'+e.id+'">'+icon("pencil")+'</button>' +
+            '<button class="row-del" data-action="delete-expense" data-id="'+e.id+'">'+icon("trash")+'</button>' +
+          '</td>' +
+        '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    return html;
+  }
+
+  /* ---------- HISTÓRICO ---------- */
+  function historicoEntries(){
+    var mk = ui.currentMonth;
+    var incList = ui.histType==="saida" ? [] : incomesOfMonth(mk).map(function(i){
+      return { type:"in", id:i.id, date:i.date, value:i.value, desc:i.description||"", category:"", label:"Entrada" };
+    });
+    var expList = ui.histType==="entrada" ? [] : expensesOfMonth(mk).map(function(e){
+      return { type:"out", id:e.id, date:e.date, value:e.value, desc:e.description||"", category:e.category||"Sem categoria", label:"" };
+    });
+    var all = incList.concat(expList);
+    if(ui.histCategory) all = all.filter(function(m){ return m.type==="in" ? false : m.category===ui.histCategory; });
+    if(ui.histSearch){
+      var q = ui.histSearch.toLowerCase();
+      all = all.filter(function(m){ return (m.desc+" "+m.label+" "+m.category).toLowerCase().indexOf(q)>-1; });
+    }
+    all.sort(function(a,b){ return b.date.localeCompare(a.date); });
+    return all;
+  }
+
+  function renderHistorico(){
+    var html = '';
+    html += renderMonthSwitcher();
+
+    html += '<div class="pills">' +
+      ['todos','entrada','saida'].map(function(t){
+        var lbl = t==="todos"?"Todos":(t==="entrada"?"Entradas":"Saídas");
+        return '<button class="pill'+(ui.histType===t?' active':'')+'" data-action="hist-type" data-val="'+t+'">'+lbl+'</button>';
+      }).join("") +
     '</div>';
 
-    if(state.expenseLists.length > 1){
-      html += '<button class="btn btn-ghost btn-sm" style="margin-top:14px;" data-action="ask-delete-expense-list" data-id="'+list.id+'">Remover esta lista</button>';
+    html += '<div class="search-wrap">'+icon("search")+'<input type="text" id="hist-search" placeholder="Buscar por descrição" value="'+esc(ui.histSearch)+'"></div>';
+
+    if(ui.histType!=="entrada"){
+      html += '<select id="hist-category" style="margin-bottom:14px;"><option value="">Todas as categorias</option>' +
+        state.categories.map(function(c){ return '<option value="'+esc(c.name)+'"'+(ui.histCategory===c.name?' selected':'')+'>'+esc(c.name)+'</option>'; }).join("") +
+      '</select>';
+    }
+
+    var entries = historicoEntries();
+    html += '<div class="card">';
+    if(!entries.length){
+      html += '<div class="empty-state"><strong>Nada por aqui</strong>Nenhuma movimentação encontrada com esses filtros.</div>';
+    } else {
+      entries.forEach(function(m){
+        html += '<div class="hist-row">' +
+          '<div class="hist-main">' +
+            '<div class="hist-desc">'+esc(m.desc || m.label)+'</div>' +
+            '<div class="hist-meta"><span>'+formatDateBR(m.date)+'</span>' +
+            (m.type==="out" ? '<span class="cat-chip">'+esc(m.category)+'</span>' : '<span>'+esc(m.label)+'</span>') +
+            '</div>' +
+          '</div>' +
+          '<div class="hist-value" style="color:'+(m.type==="in"?"var(--success)":"var(--danger)")+'">'+(m.type==="in"?"+ ":"- ")+fmt(m.value)+'</div>' +
+          '<div class="hist-actions">' +
+            '<button class="edit-pencil" data-action="open-edit-entry" data-type="'+m.type+'" data-id="'+m.id+'">'+icon("pencil")+'</button>' +
+            '<button class="row-del" data-action="'+(m.type==="in"?"delete-income":"delete-expense")+'" data-id="'+m.id+'">'+icon("trash")+'</button>' +
+          '</div>' +
+        '</div>';
+      });
     }
     html += '</div>';
     return html;
@@ -655,18 +767,29 @@
   /* ---------- PERFIL ---------- */
   function renderPerfil(){
     var html = '';
-    html += '<div class="section-title">Dados pessoais</div>';
+    html += '<div class="section-title">Conta</div>';
     html += '<div class="card" id="profile-card">' +
+      '<div class="field"><label class="field-label">E-mail</label>' +
+        '<div style="font-weight:700;font-size:14.5px;padding:2px 0 4px;">'+esc(currentUser ? currentUser.email : "")+'</div></div>' +
       '<div class="field"><label class="field-label">Nome</label><input type="text" name="name" value="'+esc(state.profile.name)+'" placeholder="Seu nome"></div>' +
-      '<div class="field"><label class="field-label">E-mail (para enviar o extrato)</label><input type="email" name="email" value="'+esc(state.profile.email)+'" placeholder="voce@email.com"></div>' +
-      '<button type="button" class="btn btn-block" data-action="submit-profile">Salvar dados</button>' +
+      '<div class="form-row-2">' +
+        '<button type="button" class="btn btn-secondary btn-block" data-action="submit-profile">Salvar</button>' +
+        '<button type="button" class="btn btn-danger btn-block" data-action="logout">Sair da conta</button>' +
+      '</div>' +
     '</div>';
 
     html += '<div class="section-title">Categorias de saídas</div>';
     html += '<div class="card">';
     html += '<div class="chip-list">';
     state.categories.forEach(function(c){
-      html += '<div class="chip">'+esc(c.name)+'<button data-action="delete-category" data-id="'+c.id+'">'+icon("x")+'</button></div>';
+      var isEditingCat = ui.editing && ui.editing.type==="category" && ui.editing.id===c.id;
+      if(isEditingCat){
+        html += '<input class="inline-edit-input" id="edit-name-input" value="'+esc(c.name)+'" data-action="rename-input" data-kind="category" data-id="'+c.id+'" style="max-width:130px;">';
+      } else {
+        html += '<div class="chip">'+esc(c.name)+
+          '<button class="pencil-btn" data-action="rename-category-start" data-id="'+c.id+'">'+icon("pencil")+'</button>' +
+          '<button data-action="delete-category" data-id="'+c.id+'">'+icon("x")+'</button></div>';
+      }
     });
     html += '</div>';
     html += '<div class="add-form" style="margin-top:0;">' +
@@ -676,13 +799,6 @@
       '</div>' +
     '</div>';
     html += '</div>';
-
-    html += '<div class="section-title">Conta</div>';
-    html += '<div class="card">' +
-      '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:2px;">Conectado como</div>' +
-      '<div style="font-weight:700;font-size:14.5px;margin-bottom:14px;">'+esc(currentUser ? currentUser.email : "")+'</div>' +
-      '<button class="btn btn-secondary btn-block" data-action="logout">Sair da conta</button>' +
-    '</div>';
 
     html += '<div class="section-title">Dados do app</div>';
     html += '<div class="card">' +
@@ -704,23 +820,32 @@
   function renderModal(){
     var m = ui.modal;
     var body = "";
-    if(m.kind==="delete-income-source"){
-      var s = state.incomeSources.find(function(x){return x.id===m.id;});
-      body = '<div class="modal-title">Remover "'+esc(s?s.name:"")+'"?</div>' +
-        '<div class="modal-text">Todos os valores lançados nessa fonte serão apagados. Essa ação não pode ser desfeita.</div>' +
-        '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
-        '<button class="btn btn-danger" data-action="confirm-delete-income-source" data-id="'+m.id+'">Remover</button></div>';
-    } else if(m.kind==="delete-expense-list"){
-      var l = state.expenseLists.find(function(x){return x.id===m.id;});
-      body = '<div class="modal-title">Remover "'+esc(l?l.name:"")+'"?</div>' +
-        '<div class="modal-text">Todas as saídas lançadas nessa lista serão apagadas. Essa ação não pode ser desfeita.</div>' +
-        '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
-        '<button class="btn btn-danger" data-action="confirm-delete-expense-list" data-id="'+m.id+'">Remover</button></div>';
-    } else if(m.kind==="reset-step1"){
+    if(m.kind==="reset-step1"){
       body = '<div class="modal-title">Apagar todos os dados?</div>' +
         '<div class="modal-text">Isso vai apagar entradas, saídas, listas e categorias personalizadas. Essa ação não pode ser desfeita.</div>' +
         '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
         '<button class="btn btn-danger" data-action="go-reset-step2">Continuar</button></div>';
+    } else if(m.kind==="edit-entry"){
+      var isIn = m.type==="in";
+      var entry = isIn ? state.incomes.find(function(x){return x.id===m.id;}) : state.expenses.find(function(x){return x.id===m.id;});
+      if(!entry){
+        body = '<div class="modal-title">Lançamento não encontrado</div>' +
+          '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Fechar</button></div>';
+        return '<div class="modal-overlay" data-action="overlay-close"><div class="modal-sheet">'+body+'</div></div>';
+      }
+      body = '<div class="modal-title">Editar '+(isIn?"entrada":"saída")+'</div>' +
+        '<div class="add-form" id="edit-entry-form" style="margin-top:0;">' +
+          '<div class="form-row-2">' +
+            '<input type="text" inputmode="decimal" name="value" placeholder="Valor (R$)" value="'+esc(String(entry.value).replace('.',','))+'">' +
+            '<input type="date" name="date" value="'+esc(entry.date||todayISO())+'">' +
+          '</div>' +
+          '<input type="text" name="description" placeholder="Descrição (opcional)" value="'+esc(entry.description||"")+'">' +
+          (isIn ? '' : ('<select name="category">' +
+            state.categories.map(function(c){ return '<option value="'+esc(c.name)+'"'+(entry.category===c.name?' selected':'')+'>'+esc(c.name)+'</option>'; }).join("") +
+          '</select>')) +
+        '</div>' +
+        '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
+        '<button class="btn" data-action="save-edit-entry">Salvar</button></div>';
     } else if(m.kind==="reset-step2"){
       body = '<div class="modal-title">Confirme para apagar</div>' +
         '<div class="modal-text">Digite <strong style="color:var(--text);">APAGAR</strong> abaixo para confirmar que deseja excluir tudo.</div>' +
@@ -730,36 +855,6 @@
     }
     return '<div class="modal-overlay" data-action="overlay-close">' +
       '<div class="modal-sheet">' + body + '</div></div>';
-  }
-
-  /* ---------- extrato text ---------- */
-  function buildExtratoText(){
-    var inc = totalIncome(), exp = totalExpense(), bal = inc-exp;
-    var lines = [];
-    lines.push("EXTRATO FINANCEIRO");
-    if(state.profile.name) lines.push(state.profile.name);
-    lines.push(new Date().toLocaleDateString('pt-BR'));
-    lines.push("");
-    lines.push("Saldo geral: " + fmt(bal));
-    lines.push("Total de entradas: " + fmt(inc));
-    lines.push("Total de saídas: " + fmt(exp));
-    lines.push("");
-    lines.push("--- Entradas por fonte ---");
-    state.incomeSources.forEach(function(s){ lines.push(s.name + ": " + fmt(incomeBySource(s.id))); });
-    lines.push("");
-    lines.push("--- Saídas por lista ---");
-    state.expenseLists.forEach(function(l){ lines.push(l.name + ": " + fmt(expenseByList(l.id))); });
-    lines.push("");
-    lines.push("--- Saídas por categoria ---");
-    var byCat = expenseByCategory();
-    Object.keys(byCat).forEach(function(k){ lines.push(k + ": " + fmt(byCat[k])); });
-    lines.push("");
-    lines.push("--- Detalhe das saídas ---");
-    state.expenses.slice().sort(function(a,b){return b.createdAt-a.createdAt;}).forEach(function(e){
-      var listName = (state.expenseLists.find(function(l){return l.id===e.listId;})||{}).name || "?";
-      lines.push("["+listName+"] " + fmt(e.value) + " - " + (e.category||"Sem categoria") + (e.description? " - "+e.description : ""));
-    });
-    return lines.join("\n");
   }
 
   /* ---------- event handling ---------- */
@@ -774,44 +869,6 @@
       if(action==="go-tab"){ ui.tab = t.getAttribute("data-tab"); ui.editing=null; render(); return; }
       if(action==="toggle-theme"){ state.theme = state.theme==="dark" ? "light" : "dark"; saveState(); render(); return; }
       if(action==="logout"){ fbAuth.signOut(); return; }
-
-      if(action==="select-income"){ ui.currentIncomeId = t.getAttribute("data-id"); render(); return; }
-      if(action==="select-list"){ ui.currentListId = t.getAttribute("data-id"); render(); return; }
-
-      if(action==="add-income-source"){
-        var s = { id:uid(), name:"Nova fonte" };
-        state.incomeSources.push(s); ui.currentIncomeId = s.id; saveState(); render(); return;
-      }
-      if(action==="add-expense-list"){
-        if(state.expenseLists.length>=5){ showToast("Máximo de 5 listas."); return; }
-        var l = { id:uid(), name:"Nova lista" };
-        state.expenseLists.push(l); ui.currentListId = l.id; saveState(); render(); return;
-      }
-
-      if(action==="start-edit"){
-        ui.editing = { type:t.getAttribute("data-kind"), id:t.getAttribute("data-id") };
-        render();
-        var inp = document.getElementById("edit-name-input");
-        if(inp){ inp.focus(); inp.select(); }
-        return;
-      }
-
-      if(action==="ask-delete-income-source"){ ui.modal = { kind:"delete-income-source", id:t.getAttribute("data-id") }; render(); return; }
-      if(action==="confirm-delete-income-source"){
-        var id = t.getAttribute("data-id");
-        state.incomeSources = state.incomeSources.filter(function(s){return s.id!==id;});
-        state.incomes = state.incomes.filter(function(i){return i.sourceId!==id;});
-        if(ui.currentIncomeId===id) ui.currentIncomeId = null;
-        ui.modal=null; saveState(); render(); return;
-      }
-      if(action==="ask-delete-expense-list"){ ui.modal = { kind:"delete-expense-list", id:t.getAttribute("data-id") }; render(); return; }
-      if(action==="confirm-delete-expense-list"){
-        var lid = t.getAttribute("data-id");
-        state.expenseLists = state.expenseLists.filter(function(l){return l.id!==lid;});
-        state.expenses = state.expenses.filter(function(e){return e.listId!==lid;});
-        if(ui.currentListId===lid) ui.currentListId = null;
-        ui.modal=null; saveState(); render(); return;
-      }
 
       if(action==="delete-income"){
         state.incomes = state.incomes.filter(function(i){return i.id!==t.getAttribute("data-id");});
@@ -834,7 +891,7 @@
         var inp2 = document.getElementById("reset-confirm-input");
         if(!inp2 || inp2.value.trim().toUpperCase()!=="APAGAR"){ showToast('Digite "APAGAR" para confirmar.'); return; }
         state = defaultState();
-        ui = { tab:"resumo", currentListId:null, currentIncomeId:null, modal:null, editing:null, toast:null, toastTimer:null };
+        ui = { tab:"resumo", modal:null, editing:null, toast:null, toastTimer:null, currentMonth:currentMonthKey(), histType:"todos", histCategory:"", histSearch:"" };
         saveState(); render(); return;
       }
       if(action==="close-modal" || action==="overlay-close"){
@@ -846,9 +903,10 @@
         var incWrap = t.closest(".add-form");
         var incValue = incWrap.querySelector('[name="value"]');
         var incDesc = incWrap.querySelector('[name="description"]');
+        var incDate = incWrap.querySelector('[name="date"]');
         var val = parseMoney(incValue.value);
         if(!val || isNaN(val) || val<=0){ showToast("Informe um valor válido."); return; }
-        state.incomes.push({ id:uid(), sourceId:t.getAttribute("data-source-id"), value:Math.round(val*100)/100, description:incDesc.value.trim(), createdAt:Date.now() });
+        state.incomes.push({ id:uid(), value:Math.round(val*100)/100, description:incDesc.value.trim(), date:(incDate&&incDate.value)||todayISO(), createdAt:Date.now() });
         saveState(); render(); return;
       }
       if(action==="submit-expense"){
@@ -856,16 +914,52 @@
         var expValue = expWrap.querySelector('[name="value"]');
         var expCat = expWrap.querySelector('[name="category"]');
         var expDesc = expWrap.querySelector('[name="description"]');
+        var expDate = expWrap.querySelector('[name="date"]');
         var val2 = parseMoney(expValue.value);
         if(!val2 || isNaN(val2) || val2<=0){ showToast("Informe um valor válido."); return; }
-        state.expenses.push({ id:uid(), listId:t.getAttribute("data-list-id"), value:Math.round(val2*100)/100, category:expCat.value, description:expDesc.value.trim(), createdAt:Date.now() });
+        state.expenses.push({ id:uid(), value:Math.round(val2*100)/100, category:expCat.value, description:expDesc.value.trim(), date:(expDate&&expDate.value)||todayISO(), createdAt:Date.now() });
         saveState(); render(); return;
+      }
+
+      if(action==="month-prev"){ ui.currentMonth = shiftMonthKey(ui.currentMonth,-1); render(); return; }
+      if(action==="month-next"){ ui.currentMonth = shiftMonthKey(ui.currentMonth,1); render(); return; }
+      if(action==="hist-type"){ ui.histType = t.getAttribute("data-val"); render(); return; }
+
+      if(action==="open-edit-entry"){
+        ui.modal = { kind:"edit-entry", type:t.getAttribute("data-type"), id:t.getAttribute("data-id") };
+        render(); return;
+      }
+      if(action==="save-edit-entry"){
+        var m0 = ui.modal;
+        var wrap0 = document.getElementById("edit-entry-form");
+        var newVal = parseMoney(wrap0.querySelector('[name="value"]').value);
+        if(!newVal || isNaN(newVal) || newVal<=0){ showToast("Informe um valor válido."); return; }
+        var newDesc = wrap0.querySelector('[name="description"]').value.trim();
+        var newDate = wrap0.querySelector('[name="date"]').value || todayISO();
+        if(m0.type==="in"){
+          var incEntry = state.incomes.find(function(x){return x.id===m0.id;});
+          if(incEntry){ incEntry.value=Math.round(newVal*100)/100; incEntry.description=newDesc; incEntry.date=newDate; incEntry.updatedAt=Date.now(); }
+        } else {
+          var expEntry = state.expenses.find(function(x){return x.id===m0.id;});
+          if(expEntry){
+            expEntry.value=Math.round(newVal*100)/100; expEntry.description=newDesc; expEntry.date=newDate; expEntry.updatedAt=Date.now();
+            var catSel = wrap0.querySelector('[name="category"]');
+            if(catSel) expEntry.category = catSel.value;
+          }
+        }
+        ui.modal = null; saveState(); render(); return;
+      }
+      if(action==="rename-category-start"){
+        ui.editing = { type:"category", id:t.getAttribute("data-id") };
+        render();
+        var inp3 = document.getElementById("edit-name-input");
+        if(inp3){ inp3.focus(); inp3.select(); }
+        return;
       }
       if(action==="submit-profile"){
         var profWrap = document.getElementById("profile-card");
         state.profile.name = profWrap.querySelector('[name="name"]').value.trim();
-        state.profile.email = profWrap.querySelector('[name="email"]').value.trim();
-        saveState(); showToast("Dados salvos."); return;
+        saveState(); showToast("Nome salvo."); return;
       }
       if(action==="submit-category"){
         var catWrap = t.closest(".add-form");
@@ -875,24 +969,6 @@
         if(state.categories.some(function(c){return c.name.toLowerCase()===name.toLowerCase();})){ showToast("Essa categoria já existe."); return; }
         state.categories.push({ id:uid(), name:name });
         saveState(); render(); return;
-      }
-
-      if(action==="download-extrato"){
-        var text = buildExtratoText();
-        var blob = new Blob([text], {type:"text/plain;charset=utf-8"});
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = url; a.download = "extrato-financeiro.txt";
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
-        return;
-      }
-      if(action==="email-extrato"){
-        if(!state.profile.email){ showToast("Preencha seu e-mail no Perfil primeiro."); return; }
-        var body = buildExtratoText();
-        var link = "mailto:"+encodeURIComponent(state.profile.email)+"?subject="+encodeURIComponent("Extrato financeiro")+"&body="+encodeURIComponent(body);
-        window.location.href = link;
-        return;
       }
     };
 
@@ -919,18 +995,34 @@
         commitRename(target);
       }
     };
+    app.oninput = function(e){
+      var target = e.target;
+      if(target.id==="hist-search"){
+        ui.histSearch = target.value;
+        render();
+        var el = document.getElementById("hist-search");
+        if(el){ el.focus(); var v=el.value; el.value=""; el.value=v; }
+        return;
+      }
+      if(target.id==="hist-category"){
+        ui.histCategory = target.value;
+        render();
+        return;
+      }
+    };
 
     function commitRename(inputEl){
       var kind = inputEl.getAttribute("data-kind");
       var id = inputEl.getAttribute("data-id");
       var val = inputEl.value.trim();
       if(val){
-        if(kind==="income-source"){
-          var s = state.incomeSources.find(function(x){return x.id===id;});
-          if(s) s.name = val;
-        } else if(kind==="expense-list"){
-          var l = state.expenseLists.find(function(x){return x.id===id;});
-          if(l) l.name = val;
+        if(kind==="category"){
+          var oldCat = state.categories.find(function(x){return x.id===id;});
+          if(oldCat && oldCat.name!==val){
+            var oldName = oldCat.name;
+            oldCat.name = val;
+            state.expenses.forEach(function(e){ if(e.category===oldName) e.category = val; });
+          }
         }
         saveState();
       }
