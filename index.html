@@ -847,7 +847,7 @@
   }
 
   function renderRecurringForm(r){
-    r = r || { type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:new Date().getDate(), startMonth:currentMonthKey(), installments:"", active:true };
+    r = r || { type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:"", startMonth:currentMonthKey(), installments:"", active:true };
     return '<div class="add-form" id="recurring-form" style="margin-top:0;">' +
       '<div class="pills">' +
         '<button type="button" class="pill'+(r.type==="out"?' active':'')+'" data-action="recur-type" data-val="out">Saída</button>' +
@@ -857,7 +857,7 @@
       '<input type="text" name="description" placeholder="Descrição (ex: Financiamento do carro)" value="'+esc(r.description||"")+'">' +
       '<div class="form-row-2">' +
         '<input type="text" inputmode="decimal" name="value" placeholder="Valor padrão (R$)" value="'+esc(r.value?String(r.value).replace('.',','):"")+'">' +
-        '<input type="number" name="day" min="1" max="28" placeholder="Dia do mês" value="'+esc(r.day||"")+'">' +
+        '<input type="number" name="day" min="1" max="28" placeholder="Dia do vencimento" value="'+esc(r.day||"")+'">' +
       '</div>' +
       (r.type==="out" ? ('<select name="category">' +
         state.categories.map(function(c){ return '<option value="'+esc(c.name)+'"'+(r.category===c.name?' selected':'')+'>'+esc(c.name)+'</option>'; }).join("") +
@@ -1093,7 +1093,7 @@
       }
 
       if(action==="open-add-recurring"){
-        ui.modal = { kind:"recurring-form", id:null, draft:{ type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:new Date().getDate(), startMonth:currentMonthKey(), installments:"" } };
+        ui.modal = { kind:"recurring-form", id:null, draft:{ type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:"", startMonth:currentMonthKey(), installments:"" } };
         render(); return;
       }
       if(action==="open-edit-recurring"){
