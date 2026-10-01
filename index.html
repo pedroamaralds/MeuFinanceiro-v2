@@ -171,6 +171,9 @@
   .hist-meta{font-size:12px;color:var(--text-muted);margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
   .hist-actions{display:flex;gap:4px;flex:0 0 auto;}
   .hist-value{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;margin-right:6px;}
+  .recur-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);}
+  .recur-row:last-child{border-bottom:none;}
+  .recur-row.recur-inactive{opacity:0.5;}
   .search-wrap{position:relative;margin-bottom:10px;}
   .search-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;stroke:var(--text-faint);}
   .search-wrap input{padding-left:38px;}
@@ -332,7 +335,8 @@
       theme: "dark",
       categories: DEFAULT_CATEGORIES.map(function(n){ return { id:uid(), name:n }; }),
       incomes: [],
-      expenses: []
+      expenses: [],
+      recurring: []
     };
   }
 
@@ -359,9 +363,43 @@
     return p[2]+"/"+p[1]+"/"+p[0].slice(2);
   }
 
+  function daysInMonth(mk){
+    var p = mk.split("-"); return new Date(parseInt(p[0],10), parseInt(p[1],10), 0).getDate();
+  }
+  function monthDiff(a,b){
+    var pa=a.split("-"), pb=b.split("-");
+    return (parseInt(pb[0],10)-parseInt(pa[0],10))*12 + (parseInt(pb[1],10)-parseInt(pa[1],10));
+  }
+  function recurringActiveInMonth(r, mk){
+    if(!r.active) return false;
+    var diff = monthDiff(r.startMonth, mk);
+    if(diff<0) return false;
+    if(r.installments && diff>=r.installments) return false;
+    if(r.skippedMonths && r.skippedMonths.indexOf(mk)>-1) return false;
+    return true;
+  }
+  function materializeRecurring(mk){
+    if(!state.recurring || !state.recurring.length) return false;
+    var changed = false;
+    state.recurring.forEach(function(r){
+      if(!recurringActiveInMonth(r, mk)) return;
+      var pool = r.type==="in" ? state.incomes : state.expenses;
+      var exists = pool.some(function(x){ return x.recurringId===r.id && monthKeyOf(x.date)===mk; });
+      if(exists) return;
+      var day = Math.min(r.day||1, daysInMonth(mk));
+      var entry = { id:uid(), value:r.value, description:r.description||"", date: mk+"-"+pad2(day), createdAt:Date.now(), recurringId:r.id };
+      if(r.type==="out") entry.category = r.category || "Outros";
+      pool.push(entry);
+      changed = true;
+    });
+    return changed;
+  }
+
   function migrateState(st){
     st.incomes.forEach(function(i){ if(!i.date) i.date = dateToISO(new Date(i.createdAt||Date.now())); });
     st.expenses.forEach(function(e){ if(!e.date) e.date = dateToISO(new Date(e.createdAt||Date.now())); });
+    if(!st.recurring) st.recurring = [];
+    st.recurring.forEach(function(r){ if(!r.skippedMonths) r.skippedMonths = []; });
     var existingNames = st.categories.map(function(c){ return c.name.trim().toLowerCase(); });
     DEFAULT_CATEGORIES.forEach(function(n){
       if(existingNames.indexOf(n.toLowerCase())===-1){
@@ -469,6 +507,9 @@
 
   /* ---------- rendering ---------- */
   function render(){
+    var chg1 = materializeRecurring(currentMonthKey());
+    var chg2 = materializeRecurring(ui.currentMonth);
+    if(chg1 || chg2) saveState();
     document.documentElement.setAttribute("data-theme", state.theme);
     var app = document.getElementById("app");
     app.innerHTML =
@@ -583,15 +624,15 @@
         html += '</div>';
       }
 
-      var movs = incList.map(function(i){ return { type:"in", date:i.date, value:i.value, desc:i.description, label:"Entrada" }; })
-        .concat(expList.map(function(e){ return { type:"out", date:e.date, value:e.value, desc:e.description, label:e.category||"Sem categoria" }; }))
+      var movs = incList.map(function(i){ return { type:"in", date:i.date, value:i.value, desc:i.description, label:"Entrada", recurringId:i.recurringId }; })
+        .concat(expList.map(function(e){ return { type:"out", date:e.date, value:e.value, desc:e.description, label:e.category||"Sem categoria", recurringId:e.recurringId }; }))
         .sort(function(a,b){ return b.date.localeCompare(a.date); })
         .slice(0,5);
       if(movs.length){
         html += '<div class="section-title">Últimas movimentações</div><div class="card">';
         movs.forEach(function(m){
           html += '<div class="mov-row">' +
-            '<div class="mov-info"><div class="mov-desc">'+esc(m.desc||m.label)+'</div><div class="mov-date">'+formatDateBR(m.date)+' · '+esc(m.label)+'</div></div>' +
+            '<div class="mov-info"><div class="mov-desc">'+esc(m.desc||m.label)+(m.recurringId ? ' <span title="Lançamento fixo">🔁</span>' : '')+'</div><div class="mov-date">'+formatDateBR(m.date)+' · '+esc(m.label)+'</div></div>' +
             '<div class="mov-value" style="color:'+(m.type==="in"?"var(--success)":"var(--danger)")+'">'+(m.type==="in"?"+ ":"- ")+fmt(m.value)+'</div>' +
           '</div>';
         });
@@ -641,7 +682,7 @@
         html += '<tr>' +
           '<td>'+formatDateBR(e.date)+'</td>' +
           '<td class="td-value" style="color:var(--success)">'+fmt(e.value)+'</td>' +
-          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
+          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') + (e.recurringId ? ' <span title="Lançamento fixo">🔁</span>' : '') +'</td>' +
           '<td style="white-space:nowrap;">' +
             '<button class="edit-pencil" data-action="open-edit-entry" data-type="in" data-id="'+e.id+'">'+icon("pencil")+'</button>' +
             '<button class="row-del" data-action="delete-income" data-id="'+e.id+'">'+icon("trash")+'</button>' +
@@ -688,7 +729,7 @@
         html += '<tr>' +
           '<td>'+formatDateBR(e.date)+'</td>' +
           '<td class="td-value" style="color:var(--danger)">'+fmt(e.value)+'</td>' +
-          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') +'</td>' +
+          '<td class="td-desc">'+ (e.description ? esc(e.description) : '—') + (e.recurringId ? ' <span title="Lançamento fixo">🔁</span>' : '') +'</td>' +
           '<td><span class="cat-chip">'+esc(e.category||"Sem categoria")+'</span></td>' +
           '<td style="white-space:nowrap;">' +
             '<button class="edit-pencil" data-action="open-edit-entry" data-type="out" data-id="'+e.id+'">'+icon("pencil")+'</button>' +
@@ -705,10 +746,10 @@
   function historicoEntries(){
     var mk = ui.currentMonth;
     var incList = ui.histType==="saida" ? [] : incomesOfMonth(mk).map(function(i){
-      return { type:"in", id:i.id, date:i.date, value:i.value, desc:i.description||"", category:"", label:"Entrada" };
+      return { type:"in", id:i.id, date:i.date, value:i.value, desc:i.description||"", category:"", label:"Entrada", recurringId:i.recurringId };
     });
     var expList = ui.histType==="entrada" ? [] : expensesOfMonth(mk).map(function(e){
-      return { type:"out", id:e.id, date:e.date, value:e.value, desc:e.description||"", category:e.category||"Sem categoria", label:"" };
+      return { type:"out", id:e.id, date:e.date, value:e.value, desc:e.description||"", category:e.category||"Sem categoria", label:"", recurringId:e.recurringId };
     });
     var all = incList.concat(expList);
     if(ui.histCategory) all = all.filter(function(m){ return m.type==="in" ? false : m.category===ui.histCategory; });
@@ -747,7 +788,7 @@
       entries.forEach(function(m){
         html += '<div class="hist-row">' +
           '<div class="hist-main">' +
-            '<div class="hist-desc">'+esc(m.desc || m.label)+'</div>' +
+            '<div class="hist-desc">'+esc(m.desc || m.label)+(m.recurringId ? ' <span title="Lançamento fixo">🔁</span>' : '')+'</div>' +
             '<div class="hist-meta"><span>'+formatDateBR(m.date)+'</span>' +
             (m.type==="out" ? '<span class="cat-chip">'+esc(m.category)+'</span>' : '<span>'+esc(m.label)+'</span>') +
             '</div>' +
@@ -765,6 +806,69 @@
   }
 
   /* ---------- PERFIL ---------- */
+  /* ---------- LANÇAMENTOS FIXOS ---------- */
+  function recurringStatusText(r){
+    var diff = monthDiff(r.startMonth, currentMonthKey());
+    if(r.installments){
+      var atual = Math.min(Math.max(diff+1,1), r.installments);
+      if(diff>=r.installments) return "Encerrado (parcela "+r.installments+"/"+r.installments+")";
+      if(diff<0) return "Começa em "+monthLabel(r.startMonth)+" · "+r.installments+"x";
+      return "Parcela "+atual+"/"+r.installments;
+    }
+    if(diff<0) return "Começa em "+monthLabel(r.startMonth);
+    return "Contínuo desde "+monthLabel(r.startMonth);
+  }
+
+  function renderRecorrentesSection(){
+    var html = '<div class="section-title">Lançamentos fixos</div><div class="card">';
+    if(!state.recurring.length){
+      html += '<div class="empty-state" style="padding:6px 0 14px;">Nenhum lançamento fixo cadastrado. Use para financiamentos, aluguel, assinaturas etc.</div>';
+    } else {
+      state.recurring.forEach(function(r){
+        html += '<div class="recur-row'+(r.active?'':' recur-inactive')+'">' +
+          '<div class="hist-main">' +
+            '<div class="hist-desc">'+esc(r.description||(r.type==="in"?"Entrada fixa":"Saída fixa"))+'</div>' +
+            '<div class="hist-meta"><span class="cat-chip" style="color:'+(r.type==="in"?"var(--success)":"var(--danger)")+'">'+(r.type==="in"?"Entrada":"Saída")+'</span>' +
+            (r.type==="out" ? '<span class="cat-chip">'+esc(r.category||"Outros")+'</span>' : '') +
+            '<span>'+esc(recurringStatusText(r))+(r.active?'':' · pausado')+'</span></div>' +
+          '</div>' +
+          '<div class="hist-value">'+fmt(r.value)+'</div>' +
+          '<div class="hist-actions">' +
+            '<button class="row-del" data-action="toggle-recurring" data-id="'+r.id+'" title="'+(r.active?'Pausar':'Reativar')+'" style="font-size:15px;">'+(r.active?'⏸':'▶')+'</button>' +
+            '<button class="edit-pencil" data-action="open-edit-recurring" data-id="'+r.id+'">'+icon("pencil")+'</button>' +
+            '<button class="row-del" data-action="delete-recurring" data-id="'+r.id+'">'+icon("trash")+'</button>' +
+          '</div>' +
+        '</div>';
+      });
+    }
+    html += '<button type="button" class="btn btn-secondary btn-block" style="margin-top:12px;" data-action="open-add-recurring">+ Novo lançamento fixo</button>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderRecurringForm(r){
+    r = r || { type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:new Date().getDate(), startMonth:currentMonthKey(), installments:"", active:true };
+    return '<div class="add-form" id="recurring-form" style="margin-top:0;">' +
+      '<div class="pills">' +
+        '<button type="button" class="pill'+(r.type==="out"?' active':'')+'" data-action="recur-type" data-val="out">Saída</button>' +
+        '<button type="button" class="pill'+(r.type==="in"?' active':'')+'" data-action="recur-type" data-val="in">Entrada</button>' +
+      '</div>' +
+      '<input type="hidden" name="type" value="'+r.type+'">' +
+      '<input type="text" name="description" placeholder="Descrição (ex: Financiamento do carro)" value="'+esc(r.description||"")+'">' +
+      '<div class="form-row-2">' +
+        '<input type="text" inputmode="decimal" name="value" placeholder="Valor padrão (R$)" value="'+esc(r.value?String(r.value).replace('.',','):"")+'">' +
+        '<input type="number" name="day" min="1" max="28" placeholder="Dia do mês" value="'+esc(r.day||"")+'">' +
+      '</div>' +
+      (r.type==="out" ? ('<select name="category">' +
+        state.categories.map(function(c){ return '<option value="'+esc(c.name)+'"'+(r.category===c.name?' selected':'')+'>'+esc(c.name)+'</option>'; }).join("") +
+      '</select>') : '') +
+      '<div class="form-row-2">' +
+        '<div class="field"><label class="field-label">Começa em</label><input type="month" name="startMonth" value="'+esc(r.startMonth)+'"></div>' +
+        '<div class="field"><label class="field-label">Parcelas (vazio = sem fim)</label><input type="number" min="1" name="installments" placeholder="Ex: 48" value="'+esc(r.installments||"")+'"></div>' +
+      '</div>' +
+    '</div>';
+  }
+
   function renderPerfil(){
     var html = '';
     html += '<div class="section-title">Conta</div>';
@@ -799,6 +903,8 @@
       '</div>' +
     '</div>';
     html += '</div>';
+
+    html += renderRecorrentesSection();
 
     html += '<div class="section-title">Dados do app</div>';
     html += '<div class="card">' +
@@ -846,6 +952,11 @@
         '</div>' +
         '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
         '<button class="btn" data-action="save-edit-entry">Salvar</button></div>';
+    } else if(m.kind==="recurring-form"){
+      body = '<div class="modal-title">'+(m.id?"Editar lançamento fixo":"Novo lançamento fixo")+'</div>' +
+        renderRecurringForm(m.draft) +
+        '<div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Cancelar</button>' +
+        '<button class="btn" data-action="save-recurring">Salvar</button></div>';
     } else if(m.kind==="reset-step2"){
       body = '<div class="modal-title">Confirme para apagar</div>' +
         '<div class="modal-text">Digite <strong style="color:var(--text);">APAGAR</strong> abaixo para confirmar que deseja excluir tudo.</div>' +
@@ -871,10 +982,20 @@
       if(action==="logout"){ fbAuth.signOut(); return; }
 
       if(action==="delete-income"){
+        var delInc = state.incomes.find(function(i){return i.id===t.getAttribute("data-id");});
+        if(delInc && delInc.recurringId){
+          var rIn = state.recurring.find(function(r){return r.id===delInc.recurringId;});
+          if(rIn){ rIn.skippedMonths = rIn.skippedMonths||[]; rIn.skippedMonths.push(monthKeyOf(delInc.date)); }
+        }
         state.incomes = state.incomes.filter(function(i){return i.id!==t.getAttribute("data-id");});
         saveState(); render(); return;
       }
       if(action==="delete-expense"){
+        var delExp = state.expenses.find(function(e){return e.id===t.getAttribute("data-id");});
+        if(delExp && delExp.recurringId){
+          var rOut = state.recurring.find(function(r){return r.id===delExp.recurringId;});
+          if(rOut){ rOut.skippedMonths = rOut.skippedMonths||[]; rOut.skippedMonths.push(monthKeyOf(delExp.date)); }
+        }
         state.expenses = state.expenses.filter(function(e){return e.id!==t.getAttribute("data-id");});
         saveState(); render(); return;
       }
@@ -969,6 +1090,65 @@
         if(state.categories.some(function(c){return c.name.toLowerCase()===name.toLowerCase();})){ showToast("Essa categoria já existe."); return; }
         state.categories.push({ id:uid(), name:name });
         saveState(); render(); return;
+      }
+
+      if(action==="open-add-recurring"){
+        ui.modal = { kind:"recurring-form", id:null, draft:{ type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:new Date().getDate(), startMonth:currentMonthKey(), installments:"" } };
+        render(); return;
+      }
+      if(action==="open-edit-recurring"){
+        var rSrc = state.recurring.find(function(x){return x.id===t.getAttribute("data-id");});
+        if(!rSrc) return;
+        ui.modal = { kind:"recurring-form", id:rSrc.id, draft:{ type:rSrc.type, value:rSrc.value, description:rSrc.description, category:rSrc.category||(state.categories[0]?state.categories[0].name:""), day:rSrc.day, startMonth:rSrc.startMonth, installments:rSrc.installments||"" } };
+        render(); return;
+      }
+      if(action==="recur-type"){
+        var rfWrap = document.getElementById("recurring-form");
+        var d = ui.modal.draft;
+        d.value = rfWrap.querySelector('[name="value"]').value;
+        d.description = rfWrap.querySelector('[name="description"]').value;
+        d.day = rfWrap.querySelector('[name="day"]').value;
+        var catSelR = rfWrap.querySelector('[name="category"]'); if(catSelR) d.category = catSelR.value;
+        d.startMonth = rfWrap.querySelector('[name="startMonth"]').value;
+        d.installments = rfWrap.querySelector('[name="installments"]').value;
+        d.type = t.getAttribute("data-val");
+        render(); return;
+      }
+      if(action==="save-recurring"){
+        var rfWrap2 = document.getElementById("recurring-form");
+        var rVal = parseMoney(rfWrap2.querySelector('[name="value"]').value);
+        if(!rVal || isNaN(rVal) || rVal<=0){ showToast("Informe um valor válido."); return; }
+        var rDesc = rfWrap2.querySelector('[name="description"]').value.trim();
+        var rDay = Math.min(Math.max(parseInt(rfWrap2.querySelector('[name="day"]').value,10)||1,1),28);
+        var rStart = rfWrap2.querySelector('[name="startMonth"]').value || currentMonthKey();
+        var rInstRaw = rfWrap2.querySelector('[name="installments"]').value;
+        var rInst = rInstRaw ? Math.max(1,parseInt(rInstRaw,10)) : null;
+        var rType = ui.modal.draft.type;
+        var rCatSel = rfWrap2.querySelector('[name="category"]');
+        var rCat = rType==="out" ? (rCatSel ? rCatSel.value : (state.categories[0]?state.categories[0].name:"Outros")) : undefined;
+        if(ui.modal.id){
+          var rEdit = state.recurring.find(function(x){return x.id===ui.modal.id;});
+          if(rEdit){
+            rEdit.type=rType; rEdit.value=Math.round(rVal*100)/100; rEdit.description=rDesc; rEdit.day=rDay; rEdit.startMonth=rStart; rEdit.installments=rInst;
+            if(rType==="out") rEdit.category=rCat; else delete rEdit.category;
+          }
+        } else {
+          var newR = { id:uid(), type:rType, value:Math.round(rVal*100)/100, description:rDesc, day:rDay, startMonth:rStart, installments:rInst, active:true, skippedMonths:[] };
+          if(rType==="out") newR.category = rCat;
+          state.recurring.push(newR);
+        }
+        ui.modal = null; saveState(); render(); return;
+      }
+      if(action==="toggle-recurring"){
+        var rTog = state.recurring.find(function(x){return x.id===t.getAttribute("data-id");});
+        if(rTog){ rTog.active = !rTog.active; saveState(); render(); }
+        return;
+      }
+      if(action==="delete-recurring"){
+        state.recurring = state.recurring.filter(function(x){return x.id!==t.getAttribute("data-id");});
+        saveState(); render();
+        showToast("Lançamento fixo removido. Os já gerados continuam no histórico.");
+        return;
       }
     };
 
