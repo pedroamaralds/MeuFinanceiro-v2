@@ -1,4 +1,4 @@
-const CACHE_NAME = 'meu-financeiro-v1.3.0';
+const CACHE_NAME = 'meu-financeiro-v1.4.0';
 const APP_SHELL = [
   './',
   './index.html',
