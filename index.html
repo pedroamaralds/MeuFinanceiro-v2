@@ -691,6 +691,7 @@
       });
       html += '</tbody></table></div>';
     }
+    html += renderRecorrentesSection("in");
     return html;
   }
 
@@ -739,6 +740,7 @@
       });
       html += '</tbody></table></div>';
     }
+    html += renderRecorrentesSection("out");
     return html;
   }
 
@@ -819,16 +821,20 @@
     return "Contínuo desde "+monthLabel(r.startMonth);
   }
 
-  function renderRecorrentesSection(){
-    var html = '<div class="section-title">Lançamentos fixos</div><div class="card">';
-    if(!state.recurring.length){
-      html += '<div class="empty-state" style="padding:6px 0 14px;">Nenhum lançamento fixo cadastrado. Use para financiamentos, aluguel, assinaturas etc.</div>';
+  function renderRecorrentesSection(type){
+    var list = state.recurring.filter(function(r){ return r.type===type; });
+    var title = type==="in" ? "Entradas fixas" : "Saídas fixas";
+    var emptyTxt = type==="in" ? "Nenhuma entrada fixa cadastrada. Use para salário, aluguel recebido etc." : "Nenhuma saída fixa cadastrada. Use para financiamento, aluguel, assinaturas etc.";
+    var btnTxt = type==="in" ? "+ Nova entrada fixa" : "+ Nova saída fixa";
+    var html = '<div class="section-title">'+title+'</div><div class="card">';
+    if(!list.length){
+      html += '<div class="empty-state" style="padding:6px 0 14px;">'+emptyTxt+'</div>';
     } else {
-      state.recurring.forEach(function(r){
+      list.forEach(function(r){
         html += '<div class="recur-row'+(r.active?'':' recur-inactive')+'">' +
           '<div class="hist-main">' +
             '<div class="hist-desc">'+esc(r.description||(r.type==="in"?"Entrada fixa":"Saída fixa"))+'</div>' +
-            '<div class="hist-meta"><span class="cat-chip" style="color:'+(r.type==="in"?"var(--success)":"var(--danger)")+'">'+(r.type==="in"?"Entrada":"Saída")+'</span>' +
+            '<div class="hist-meta">' +
             (r.type==="out" ? '<span class="cat-chip">'+esc(r.category||"Outros")+'</span>' : '') +
             '<span>'+esc(recurringStatusText(r))+(r.active?'':' · pausado')+'</span></div>' +
           '</div>' +
@@ -841,7 +847,7 @@
         '</div>';
       });
     }
-    html += '<button type="button" class="btn btn-secondary btn-block" style="margin-top:12px;" data-action="open-add-recurring">+ Novo lançamento fixo</button>';
+    html += '<button type="button" class="btn btn-secondary btn-block" style="margin-top:12px;" data-action="open-add-recurring" data-type="'+type+'">'+btnTxt+'</button>';
     html += '</div>';
     return html;
   }
@@ -903,8 +909,6 @@
       '</div>' +
     '</div>';
     html += '</div>';
-
-    html += renderRecorrentesSection();
 
     html += '<div class="section-title">Dados do app</div>';
     html += '<div class="card">' +
@@ -1093,7 +1097,8 @@
       }
 
       if(action==="open-add-recurring"){
-        ui.modal = { kind:"recurring-form", id:null, draft:{ type:"out", value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:"", startMonth:currentMonthKey(), installments:"" } };
+        var preType = t.getAttribute("data-type")==="in" ? "in" : "out";
+        ui.modal = { kind:"recurring-form", id:null, draft:{ type:preType, value:"", description:"", category:state.categories[0]?state.categories[0].name:"", day:"", startMonth:currentMonthKey(), installments:"" } };
         render(); return;
       }
       if(action==="open-edit-recurring"){
