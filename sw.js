@@ -1,4 +1,4 @@
-const CACHE_NAME = 'meu-financeiro-v1.4.0';
+const CACHE_NAME = 'meu-financeiro-v1.5.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -23,8 +23,32 @@ self.addEventListener('activate', event => {
   );
 });
 
+// Para a página principal (navegação / index.html): tenta a rede primeiro,
+// assim qualquer atualização publicada aparece na próxima abertura do app,
+// sem depender de trocar o nome do cache a cada deploy. Cai pro cache só se
+// estiver offline.
+function isAppShellRequest(request) {
+  return request.mode === 'navigate' || request.url.endsWith('/index.html') || request.url.endsWith('/');
+}
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+
+  if (isAppShellRequest(event.request)) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+        }
+        return response;
+      }).catch(() => caches.match(event.request).then(cached => cached || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // Demais arquivos (fontes, ícones, manifest): cache primeiro, já que
+  // mudam raramente e isso deixa o carregamento mais rápido.
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
@@ -33,8 +57,6 @@ self.addEventListener('fetch', event => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
         return response;
-      }).catch(() => {
-        if (event.request.mode === 'navigate') return caches.match('./index.html');
       });
     })
   );
